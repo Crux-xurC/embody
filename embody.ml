@@ -55,6 +55,19 @@ let equal_to var text =
   let ok, _ = use (Printf.sprintf "Embody.check := (try (%s) = %s with _ -> false);;" text var) in
   ok && !check
 
+(* where [sub] first occurs in [s] *)
+let index_of sub s =
+  let n = String.length s and m = String.length sub in
+  let rec go i = if i + m > n then None else if String.sub s i m = sub then Some i else go (i + 1) in
+  go 0
+
+(* where the line starting with [prefix] starts in [printed]: the toplevel
+   prints a warning (labels omitted in the call, a deprecated function ...)
+   before the value line, and the value is there all the same *)
+let line_starting prefix printed =
+  if String.starts_with ~prefix printed then Some 0
+  else Option.map (fun i -> i + 1) (index_of ("\n" ^ prefix) printed)
+
 let split_on_equals s =
   let n = String.length s in
   let rec find i = if i + 3 > n then None else if String.sub s i 3 = " = " then Some i else find (i + 1) in
@@ -73,11 +86,12 @@ let run id var timeout_ms text prev =
   let ok, printed = with_timeout timeout_ms (fun () -> use text) in
   let out s = print_string s; print_newline () in
   let prefix = Printf.sprintf "val %s : " var in
-  if !timed_out then out (Printf.sprintf "XT_ERROR_%s timeout" id)
-  else if (not ok) || not (String.starts_with ~prefix printed) then
-    out (Printf.sprintf "XT_ERROR_%s crash %s" id (oneline printed))
-  else begin
-    let rest = String.sub printed (String.length prefix) (String.length printed - String.length prefix) in
+  match (if !timed_out || not ok then None else line_starting prefix printed) with
+  | _ when !timed_out -> out (Printf.sprintf "XT_ERROR_%s timeout" id)
+  | None -> out (Printf.sprintf "XT_ERROR_%s crash %s" id (oneline printed))
+  | Some at ->
+    let from = at + String.length prefix in
+    let rest = String.sub printed from (String.length printed - from) in
     let ty, value = split_on_equals rest in
     let exact = (not (String.contains value '\n')) && equal_to var value in
     let compare =
@@ -89,7 +103,6 @@ let run id var timeout_ms text prev =
       (String.concat "\n"
          [ "XT_BEGIN_" ^ id; "repr=" ^ (if exact then "exact" else "unsupported"); "type=" ^ oneline ty;
            "compare=" ^ compare; "display=" ^ oneline value; "XT_END_" ^ id ])
-  end
 
 (* [path]'s text with its top-level expressions and its `let ()` / `let _`
    bindings blanked out -- newlines kept, so line numbers stay the file's:
