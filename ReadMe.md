@@ -1,93 +1,83 @@
 # embody
 
-対話環境（REPL・トップレベル）で関数を評価し、その結果を**どんな値でも有限の1行の文字列**にして、
-決まったマーカーで囲んで印字する、言語ごとの固定モジュール。
+Language-specific helper modules that evaluate expressions in an interactive environment (a REPL or toplevel) and print each result as a finite, single-line record surrounded by fixed markers.
 
-- **対象を知らない**: どの関数を評価するかは、呼び出し側が REPL へ送る1行が決める。embody 自身は
-  対象のモジュールに依存せず、言語の標準の範囲（OCaml ならトップレベル自身、Haskell なら `base`）だけで書く
-- **必ず返ってくる**: 時間切れ・例外・型エラーも、マーカー付きの1行として返す。無限の構造や関数のような
-  「表示しきれない値」も、有限の表示と「読み戻せない」という印（`repr=unsupported`）で返す
-- **値に体を与える**: 画面で見るだけなら要らない値でも、記録（データベース）に入れるには何かの形が要る。
-  見えない値に一時的に体を与える、というのが名前の由来
+- **Target-agnostic:** The caller chooses the expression by sending one line to the REPL. embody does not depend on the target module; it uses only the language's standard environment (the OCaml toplevel itself, or Haskell's `base`).
+- **A result for each evaluation:** Timeouts, exceptions, and type errors are returned as marker-delimited records. Values that cannot be fully displayed, such as infinite structures and functions, receive a finite display and `repr=unsupported`.
+- **Giving values a body:** A value may be useful to inspect on screen but still need a representation to be recorded in a database. The name refers to temporarily giving such otherwise invisible values a body.
 
-Xipe Totec（関数型言語のプロジェクトの関数を計算行として評価・記録するツール）が
-各言語の REPL の中で使う部品として作ったもの。出力の約束（下記）に従えば、ほかのツールからも使える。
+embody was created as a component used by Xipe Totec, a tool that evaluates and records functions from functional-language projects as calculation rows. Other tools can use it by following the output contract below.
 
 ---
 
-## ファイル
+## Files
 
-| ファイル | 言語・REPL | 状態 |
+| File | Language / REPL | Status |
 |---|---|---|
-| `embody.ml` | OCaml（素の `ocaml` トップレベル） | 実装済み。OCaml 5.5.0・dune 3.23.1 で確認 |
-| `embody.hs` | Haskell（GHCi） | 実装済み。GHC 9.10.3 の GHCi で確認 |
+| `embody.ml` | OCaml (the standard `ocaml` toplevel) | Implemented; checked with OCaml 5.5.0 and dune 3.23.1 |
+| `embody.hs` | Haskell (GHCi) | Implemented; checked with GHC 9.10.3 |
 
-各ファイルは単独で読み込める。ビルドの設定（flake・dune・cabal など）は持たない。読み込み方は呼び出し側が決める。
+Each file can be loaded on its own. This repository does not provide build configuration (flake, dune, cabal, and so on); the caller decides how to load the module.
 
 ---
 
-## 出力の約束（全言語共通）
+## Shared output contract
 
-1回の評価につき、次のどちらかを**1回の書き込みで**印字する（ほかの出力が途中に割り込まないように）。
-`<id>` は呼び出し側が決める評価の識別子。
+Each evaluation prints one of the following records in a single write, so other output cannot interleave with it. The caller chooses `<id>`.
 
-**成功**
+**Success**
 
 ```
 XT_BEGIN_<id>
 repr=<exact|binary|unsupported>
-type=<型>
+type=<type>
 compare=<none|same|changed|skipped>
-display=<値の表示、1行>
+display=<single-line value display>
 XT_END_<id>
 ```
 
-| 欄 | 意味 |
+| Field | Meaning |
 |---|---|
-| `repr` | `exact`: `display` をその言語のソースとして評価すると元の値に戻る（ほかの式に埋め込める・比べられる）。`binary`: 文字列では戻らないがバイト列で保存できる（`bin_base64=` の欄が付く）。`unsupported`: 戻せない（関数・循環・抽象型など）。表示だけを記録する |
-| `type` | 値の型。言語の粒度のまま（OCaml は `Geometry.shape list` のような型そのもの） |
-| `compare` | 前回の値が渡されたとき、それと比べた結果。渡されなければ `none`。どちらかが `exact` でなければ `skipped` |
-| `display` | 値の表示。改行は `\n` の2文字にして1行にする |
+| `repr` | `exact`: evaluating `display` as source in the same language reconstructs the value, so it can be embedded in another expression and compared. `binary`: the value cannot be reconstructed from source text but can be stored as bytes; a `bin_base64=` field is included. `unsupported`: it cannot be reconstructed (for example, a function, cycle, or abstract value); only its display is recorded. |
+| `type` | The type at the language's own level of detail (for example, OCaml's `Geometry.shape list`). |
+| `compare` | Comparison with a previous value, when supplied. It is `none` when no previous value was supplied and `skipped` when either value is not `exact`. |
+| `display` | A one-line display of the value. Newlines are represented by the two characters `\n`. |
 
-**失敗**
+**Failure**
 
 ```
 XT_ERROR_<id> timeout
-XT_ERROR_<id> crash <理由、1行>
+XT_ERROR_<id> crash <one-line reason>
 ```
 
-`crash` の理由は、その言語自身の文言（例外の表示、型エラー・構文エラーの報告）をそのまま1行にしたもの。
+A `crash` reason is the language's own text, such as an exception, type error, or syntax error.
 
-**変えてはいけないもの**: マーカーの文字列（`XT_BEGIN_`・`XT_END_`・`XT_ERROR_`）、欄の名前、1行ずつの
-`キー=値` の形。呼び出し側はこれだけを頼りに出力を読む。REPL がほかに何を印字しても（プロンプトなど）、
-自分の `<id>` のマーカーの間だけを見ればよい。
+The marker prefixes (`XT_BEGIN_`, `XT_END_`, `XT_ERROR_`), field names, and one-line `key=value` format are protocol and must not change. A caller can ignore other REPL output, such as prompts, and parse only the markers for its own `<id>`.
 
 ---
 
-## OCaml（`embody.ml`）
+## OCaml (`embody.ml`)
 
-素の `ocaml` トップレベルに読み込む。`utop` は使わない。コンパイラの部品は、トップレベル自身が持つ
-`Toploop` だけを使う（`ocamlcommon.cma` を読むとコンパイラの別の写しになり、型エラーをトップレベルの文言で
-報告できなくなる）。
+Load this into the standard `ocaml` toplevel; `utop` is not supported. It uses the toplevel's own `Toploop`. Loading `ocamlcommon.cma` would introduce a separate compiler instance and prevent errors from being reported with the active toplevel's diagnostics.
 
-**読み込み**（`ocaml -init <初期化ファイル>` の初期化ファイルに書く）
+**Loading** (place these commands in an `ocaml -init <init-file>` file):
 
 ```ocaml
 #directory "+compiler-libs";;
 #directory "+unix";;
 #load "unix.cma";;
-#mod_use "<このディレクトリ>/embody.ml";;
-Embody.dune_deps "<プロジェクトの根>";;                          (* dune のプロジェクトだけ *)
-Embody.load_all ~aliases:[("Mylib", ["Stats"; "Words"])] "<作業用ディレクトリ>" ["<a.ml>"; "<b.ml>"];;
+#mod_use "<path-to-embody>/embody.ml";;
+Embody.dune_deps "<project-root>";; (* dune projects only *)
+Embody.load_all ~aliases:[("Mylib", ["Stats"; "Words"])] "<working-directory>" ["<a.ml>"; "<b.ml>"];;
 ```
 
-| 関数 | 役割 |
+| Function | Purpose |
 |---|---|
-| `Embody.run id var timeout_ms text prev` | `text`（`let <var> = <呼び出し>;;`）をトップレベルに評価させ、表示（`val <var> : <型> = <値>`）から出力の約束の形を作る。`prev` は前回の値のソース（`Some "…"` / `None`） |
-| `Embody.load_all ?aliases dir paths` | 対象の `.ml` を1ファイル1モジュールとして読む。トップレベルの式と `let ()`/`let _` は空白で塗りつぶした写し（`dir` に置く、改行は残すので行番号は元のまま）を読むので、副作用は走らない。依存の順は、失敗したものを後で読み直して決める。`aliases` は dune の包まれたライブラリの別名（`module Mylib = struct module Words = Words … end`）で、メンバーがそろったら定義する。読めなかったものは `XT_LOAD_FAILED <path>` と理由を印字する |
-| `Embody.dune_deps root` | `root` で `dune ocaml top` を実行し、依存するライブラリの `#directory`/`#load` だけを読む（プロジェクト自身のライブラリの行は除く。自身のコードは `load_all` がソースから読む）。トップレベルの環境（`OCAMLPATH`・dune）で動く。dune がプロジェクトをビルドする |
+| `Embody.run id var timeout_ms text prev` | Evaluates `text` (for example, `let <var> = <call>;;`) in the toplevel and converts its printed `val <var> : <type> = <value>` line to the output contract. `prev` is the previous value as source (`Some "…"` or `None`). |
+| `Embody.load_all ?aliases dir paths` | Loads each target `.ml` file as a module named after the file. Top-level expressions and `let ()` / `let _` are blanked in sanitized copies under `dir` (newlines are preserved for source locations), so those effects do not run. Files that fail to load are retried after their dependencies. `aliases` defines wrapped dune library aliases (for example, `module Mylib = struct module Words = Words … end`) once their members are available. Failed files produce `XT_LOAD_FAILED <path>` and a reason. |
+| `Embody.dune_deps root` | Runs `dune ocaml top` at `root` and loads only dependency `#directory` / `#load` directives, excluding the project's own library directives. The target's source is loaded by `load_all`. It uses the toplevel environment, including `OCAMLPATH` and dune; dune builds the project. |
 
-**呼び出しの例**
+**Example**
 
 ```ocaml
 Embody.run "c1" "xt_c1" 5000 "let xt_c1 = Geometry.area (Geometry.Circle 2.);;" None;;
@@ -102,94 +92,76 @@ display=12.
 XT_END_c1
 ```
 
-- `repr`: 表示された値をもう一度評価して `=` で等しければ `exact`、それ以外は `unsupported`（`<fun>`・
-  `<cycle>`・`<abstr>`・インラインレコードの表示など）。`binary` はまだ無い
-- 時間の上限は `Unix.setitimer` の SIGALRM。メモリの上限は無い（固まればトップレベルごと止める前提）
-- トップレベルが値の行の前に警告を印字しても（ラベル付きの引数をラベル無しで渡した呼び出し、非推奨の関数）、
-  値の行（`val <var> : …`）を探して読む。警告は出力に入れない（2026-10-16。それまでは成功を `crash` と返していた）
-- 評価中に SIGINT を受けると、その句だけが止まり（`Interrupted.`）、トップレベルは読み続ける
-- 同じ回の後の評価から、前の結果を変数（`xt_c1`）で参照できる
+- `repr` is `exact` when evaluating the displayed value again with `=` produces the same value; otherwise it is `unsupported` (for example, `<fun>`, `<cycle>`, `<abstr>`, or inline-record displays). OCaml does not yet produce `binary`.
+- The time limit uses `Unix.setitimer` and SIGALRM. There is no memory limit; a hard hang requires stopping the toplevel process.
+- Warnings printed before the value line (for example, an unlabelled call to a labelled argument or a deprecated function) are ignored while the `val <var> : …` line is read. (2026-10-16; previously, such a successful evaluation could be reported as `crash`.)
+- SIGINT interrupts the current phrase (`Interrupted.`) and leaves the toplevel available for more input.
+- Later evaluations in the same REPL session can refer to an earlier result by its bound variable (for example, `xt_c1`).
 
-**制約**: ppx を使うファイル（ソースをそのまま読むので前処理されない）、同じ名前のファイルが2つある構成、
-1つの `dune` ファイルに複数のライブラリ（別名を作らない）。
+**Known limitations:** Files that require ppx preprocessing; projects with duplicate source filenames; and a single `dune` file declaring multiple libraries (aliases are not generated for that case).
 
-**範囲の外**（「必ず返る」から外れるが、Xipe Totec のテストで使う範囲ではまず当たらないもの。crux、2026-10-16）:
+**Out of scope** (these violate the “always returns a record” expectation, though they are unlikely in Xipe Totec's current test projects; crux, 2026-10-16):
 
-- `load_all` で、対象のファイルを開けない・作業用ディレクトリに写しを書けない: `XT_LOAD_FAILED` を出さず、OCaml の
-  例外（`Sys_error`）がそのまま出る（読み込みの段なので、呼び出し側には起動の失敗として見える）
-- 評価が終わってからタイマーを止めるまでの間（マイクロ秒）に SIGALRM が来る: マーカーを出さずに `Timeout` が抜ける
-- 型に ` = ` を含む値（`(module S with type t = int)` のような第一級モジュール）: 型と値を最初の ` = ` で分けるので、
-  `type=` と `display=` がずれる（その値はもともと `unsupported`）
+- If `load_all` cannot open a target file or write its sanitized copy, it raises OCaml's `Sys_error` instead of printing `XT_LOAD_FAILED`. This happens during loading and appears to the caller as a startup failure.
+- SIGALRM may arrive in the microseconds between evaluation finishing and the timer being stopped, causing `Timeout` to escape without a marker.
+- If a type contains ` = ` (for example, a first-class module type such as `(module S with type t = int)`), the output parser splits at the first ` = `; `type=` and `display=` can be misaligned. Such values are already `unsupported`.
 
 ---
 
-## Haskell（`embody.hs`）
+## Haskell (`embody.hs`)
 
-GHCi に読み込む。依存は `base` だけ。GHC 9.10.3 で確かめた。
+Load this into GHCi. It depends only on `base` and was checked with GHC 9.10.3.
 
-**GHCi の起動**
+**Starting GHCi**
 
 ```
 ghci -v0 -fdefer-type-errors -Wno-deferred-type-errors -Wno-deferred-out-of-scope-variables \
-     <このディレクトリ>/embody.hs <対象の .hs ...> -i<ソースのディレクトリ>
+     <path-to-embody>/embody.hs <target .hs files ...> -i<source-directory>
 :module + *Target ...
 ```
 
-`-v0` ではバナーもプロンプトも出ない。ソースから読み込んで `*Target` をスコープに入れれば、export されていない
-関数も `Target.f` で呼べる。`main` は走らない。
+With `-v0`, GHCi prints neither a banner nor a prompt. Load the target sources and bring their modules into scope with `*Target`; even unexported functions can then be called as `Target.f`. `main` is not run.
 
-**1件の送り方**（`-fdefer-type-errors` は `let` の束縛にだけ効くので、振り分けに使う式はすべて `let` で束縛する）
+**Evaluating one entry** (`-fdefer-type-errors` applies to `let` bindings, so each expression used for classification is bound with `let`):
 
 ```haskell
 let xt_<id> = Target.f (x)
 let xt_<id>_w = Embody.whnf xt_<id>
-let xt_<id>_x = Embody.exact <前回: Nothing | Just "…"> xt_<id>
+let xt_<id>_x = Embody.exact <previous: Nothing | Just "…"> xt_<id>
 let xt_<id>_s = Embody.shown xt_<id>
 let xt_<id>_t = Embody.typed xt_<id>
-Embody.run "<id>" <時間の上限（マイクロ秒）> xt_<id>_w xt_<id>_x xt_<id>_s xt_<id>_t
+Embody.run "<id>" <timeout-in-microseconds> xt_<id>_w xt_<id>_x xt_<id>_s xt_<id>_t
 ```
 
-- `run` は `whnf`（呼び出しが走ったか）→ `exact`（`Read`・`Show`・`Eq` があり、`show` が読み戻せて等しい）→
-  `shown`（`Show` だけ：`show` を2000文字で切る。無限の構造でも返る）→ 型（`Typeable`）の順に試す。インスタンスが
-  無い段は、その `let` が実行時の型エラーになるので飛ばす
-- 例外・呼び出しの型エラーは `crash`（GHC の文言）。時間の上限は `System.Timeout.timeout`（解釈実行ではループも止まる）
-- 評価中に SIGINT を受けると、その評価だけが止まり（`Interrupted.`）、GHCi は読み続ける
-- メモリの上限は持たない（GHC の割り当ての上限 `enableAllocationLimit` は効くが、生きているメモリではなく割り当ての総量なので使っていない）
-- `cut :: [a] -> [a]`（先頭100要素）: 比べたい値の横に「観測の行」を置くためのもの。切ったリストは
-  `Read` を持つので `exact` になり、前回と比べられる
-- 未定: `IO` を返す関数の実行（`observeIO`）。いまは実行せず、型を表示にする。浮動小数点の比較の許容誤差も無い（`==`）
-- 範囲の外: 例外の文言そのものが例外になるもの（`error (show (1 `div` 0))`）、`Show` が文字の中身で例外を出す値。
-  `crash` の行を印字している途中で例外が出るので、マーカーの行が `XT_ERROR_<id> crash ` で途切れ、残りは GHCi 自身の
-  `*** Exception` になる（「必ず返る」から外れる。crux、2026-10-16）
+- `run` tries, in order: `whnf` (whether the call runs), `exact` (the value has `Read`, `Show`, and `Eq`, and `show` can be read back to an equal value), `shown` (only `Show`; truncated to 2,000 characters, so infinite structures can still be displayed), then the type (`Typeable`). If an instance is missing, the corresponding `let` produces a deferred runtime type error and that stage is skipped.
+- Exceptions and call type errors become `crash` with GHC's message. Timeouts use `System.Timeout.timeout`, which can interrupt interpreted loops.
+- SIGINT interrupts the current evaluation (`Interrupted.`) and GHCi continues reading.
+- There is no memory limit. GHC's `enableAllocationLimit` limits total allocation, not live memory, so it is not used here.
+- `cut :: [a] -> [a]` takes the first 100 list elements. It can be used in an observation row; the resulting list has `Read`, can be `exact`, and can be compared with a previous result.
+- Functions returning `IO` are not executed as IO actions; their type is displayed. Approximate floating-point comparison is also unavailable; comparison uses `==`.
+
+**Out of scope:** An exception whose own message throws (for example, `error (show (1 `div` 0))`) and values whose `Show` implementation throws while producing text. An exception during error formatting can truncate the marker to `XT_ERROR_<id> crash `; the remaining output is GHCi's `*** Exception` message. The output is therefore not guaranteed to be a complete record in these cases (crux, 2026-10-16).
 
 ---
 
-## 新しい言語の embody を書くとき
+## Adding support for another language
 
-embody を足すのは、その言語の REPL で「どんな値でも、有限の1行と、読み戻せるかどうか」を返す仕組みが要るとき。
-次を満たすこと（どれも OCaml・Haskell で実機を相手に確かめてから決めた）。
+Add an embody module when the target REPL needs a way to return a finite one-line value representation and say whether it can be read back. The following have been validated against real OCaml and Haskell REPLs:
 
-1. **対象を知らない**: 評価する関数は、呼び出し側が送るテキストで届く。解釈は REPL 自身に任せる。対象のモジュールに
-   コンパイル時に依存させない（対象ごとに作り直しが要り、型も分からない）
-2. **言語の標準の範囲だけで書く**: 外部のパッケージに依存すると、対象の環境にそれが無いときに読み込めない
-3. **必ず返る**: 例外・型エラー・構文エラー・インスタンスの欠け・無限ループのどれでも、マーカー付きの1行で返す。
-   REPL が続きの入力を待つ状態（閉じていない括弧など）に入らないよう、呼び出しの渡し方を工夫する
-   （OCaml: 呼び出しを文字列で渡す。Haskell: `let` で束縛してから実行の行を送る）
-4. **1回の書き込みで印字する**: ほかの出力が割り込まないように。最後に出力を flush する
-5. **時間の上限を持つ**: 1件ごとに。割り当ての無いループでも止まるかを確かめる
-6. **読み戻せる値だけを `exact` にする**: 表示をその言語のソースとして評価して、等しいかを確かめる。表示しきれない値
-   （無限・関数・循環）は、有限の表示（切った文字列や型）と `repr=unsupported` で返す
-7. **前の結果を変数で参照できる**: 同じ回の後の評価から `xt_<id>` で使えるように、REPL のトップレベルに束縛する
+1. **Remain target-agnostic.** The caller sends the expression as text and the REPL interprets it. Do not add a compile-time dependency on target modules; that would require rebuilding for each target and still would not reveal arbitrary types.
+2. **Use the language's standard environment.** External packages may not be installed in the target project.
+3. **Return a marker record.** Exceptions, type and syntax errors, missing instances, and infinite loops should all produce one marker-delimited line. Prevent the REPL from waiting for the rest of an incomplete expression (OCaml receives the call as text; Haskell binds expressions with `let`).
+4. **Print each record in one write** and flush it so other output cannot interleave.
+5. **Apply a per-entry timeout** and verify that even a loop without allocation can be interrupted.
+6. **Mark only reconstructible values as `exact`.** Evaluate the displayed source and compare it with the original. For values that cannot be fully displayed (infinite structures, functions, cycles), return a finite display or type with `repr=unsupported`.
+7. **Bind previous results** at the REPL top level so later evaluations in the same session can refer to them as `xt_<id>`.
 
-書く前に、その言語の REPL を pipe でつないで、起動の確認・失敗の返り方・時間の上限・SIGINT で評価だけが止まるか、を
-確かめる。手順と確かめた例は Xipe Totec の `document/拡張の手引き.md` §2.2。
+Before implementing an adapter, connect to the target REPL through a pipe and check startup, failures, timeouts, and whether SIGINT stops only the current evaluation. Xipe Totec's `language adapter guide` §2.2 describes the procedure and examples.
 
-書いたら、この ReadMe の「ファイル」の表と、その言語の節（読み込み方・送り方・確かめた版・制約）を足す。
+After adding a language, update this file's language table and the corresponding section with loading instructions, the evaluation protocol, tested versions, and limitations.
 
 ---
 
-## 使っているところ
+## Used by
 
-- **Xipe Totec**: 評価のたびに、その言語の embody を REPL に読み込み、各行の呼び出しを必ず embody で包んで
-  送る。embody の置き場所は、Xipe Totec の隣（`../embody/`）が既定で、環境変数 `XIPE_TOTEC_EMBODY_DIR` で
-  変えられる
+- **Xipe Totec:** On every evaluation pass, it loads the language's embody module into the REPL and wraps each call with it. By default, Xipe Totec looks for embody in the sibling `../embody/` directory; `XIPE_TOTEC_EMBODY_DIR` overrides that location.
