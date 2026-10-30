@@ -165,3 +165,9 @@ After adding a language, update this file's language table and the corresponding
 ## Used by
 
 - **Xipe Totec:** On every evaluation pass, it loads the language's embody module into the REPL and wraps each call with it. By default, Xipe Totec looks for embody in the sibling `../embody/` directory; `XIPE_TOTEC_EMBODY_DIR` overrides that location.
+
+---
+
+## License
+
+MIT. See [LICENSE](LICENSE).

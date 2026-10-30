@@ -1,4 +1,6 @@
-(* embody.ml -- the OCaml embody: a fixed module loaded into the target
+(* SPDX-License-Identifier: MIT
+
+   embody.ml -- the OCaml embody: a fixed module loaded into the target
    project's plain `ocaml` toplevel. See ReadMe.md (this directory) for what
    embody is and the output protocol every language's embody shares.
 
