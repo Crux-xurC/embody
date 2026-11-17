@@ -159,7 +159,7 @@ del sys.path[0]
 _xt_embody.install({"calc": "/project/calc.py", "geo.shape": "/project/src/geo/shape.py"})
 ```
 
-`install` puts an import hook first on `sys.meta_path` for the named modules. Importing one of them runs only its `def`, `async def`, `class`, `import` and `from … import` statements, assignments of literal values (`FACTOR = 3`), and `try` blocks made of those; other top-level statements (`print(…)`, `if __name__ == "__main__":`, `X = f()`) do not run. Imports between the target's own modules go through the same hook. Other packages import as usual.
+`install` puts an import hook first on `sys.meta_path` for the named modules. Importing one of them runs only its `def`, `async def`, `class`, `import` and `from … import` statements, assignments of literal values (`FACTOR = 3`), aliases (`comp = compose`, `join = os.path.join`: a name or a chain of attributes, no call), and `try` blocks made of those; other top-level statements (`print(…)`, `if __name__ == "__main__":`, `X = f()`) do not run. Imports between the target's own modules go through the same hook. Other packages import as usual.
 
 **Evaluating one entry** (one line):
 
@@ -167,7 +167,7 @@ _xt_embody.install({"calc": "/project/calc.py", "geo.shape": "/project/src/geo/s
 _xt_embody.run("<id>", "xt_<id>", <timeout-in-milliseconds>, "<module>", "<call>", <previous: None | ("exact", "…") | ("binary", "<base64>")>)
 ```
 
-- `run` imports `<module>`, binds its top-level package name in `__main__`, and evaluates `<call>` (text, compiled inside `run`, so an argument that does not parse is a `crash` with `SyntaxError` instead of the REPL waiting for more input). The value is bound to `xt_<id>` in `__main__` whatever its repr.
+- `run` imports `<module>`'s top-level package, then `<module>` (so a package whose `__init__.py` fails gives that error in every entry), binds its top-level package name in `__main__`, and evaluates `<call>` (text, compiled inside `run`, so an argument that does not parse is a `crash` with `SyntaxError` instead of the REPL waiting for more input). The value is bound to `xt_<id>` in `__main__` whatever its repr.
 - `repr`: `repr()` read back with `ast.literal_eval` and equal → `exact`; otherwise a `pickle` that loads back equal → `binary` (`bin_base64=`); otherwise `unsupported`. Equality requires the same types, compares floats within `1e-9` and containers element by element; a value with a cycle is compared by its pickle bytes.
 - Exceptions become `crash` with the exception's type and message. Timeouts use SIGALRM (`signal.setitimer`), which stops loops running Python bytecode.
 - SIGINT raises `KeyboardInterrupt` in the current evaluation and the REPL continues reading.

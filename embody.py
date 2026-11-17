@@ -37,15 +37,24 @@ def _literal(node):
         return False
 
 
+def _alias(node):
+    """A name or a chain of attributes (`compose`, `os.path.join`): no call."""
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return isinstance(node, ast.Name)
+
+
 def _kept(node):
     """Whether a top-level statement is kept when a project module is loaded."""
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)):
         return True
-    # constants the functions read: NAME = <literal>, NAME: T = <literal>
+    # constants the functions read: NAME = <literal>, NAME: T = <literal>;
+    # aliases: NAME = other_name, NAME = module.attr (no call runs)
     if isinstance(node, ast.Assign):
-        return all(isinstance(t, ast.Name) for t in node.targets) and _literal(node.value)
+        return all(isinstance(t, ast.Name) for t in node.targets) and (_literal(node.value) or _alias(node.value))
     if isinstance(node, ast.AnnAssign):
-        return isinstance(node.target, ast.Name) and node.value is not None and _literal(node.value)
+        return (isinstance(node.target, ast.Name) and node.value is not None
+                and (_literal(node.value) or _alias(node.value)))
     # try: import x / except ImportError: x = None
     if isinstance(node, ast.Try):
         stmts = node.body + node.orelse + node.finalbody + [s for h in node.handlers for s in h.body]
@@ -192,9 +201,11 @@ def run(call_id, var, timeout_ms, module, call, basis=None):
     signal.setitimer(signal.ITIMER_REAL, max(timeout_ms, 1) / 1000.0)
     try:
         try:
-            importlib.import_module(module)
+            # the top-level package first: a submodule left in sys.modules by
+            # a package whose __init__ failed must not hide that failure
             top = module.split(".")[0]
-            main[top] = sys.modules[top]
+            main[top] = importlib.import_module(top)
+            importlib.import_module(module)
             value = eval(compile(call, "<xipe_totec>", "eval"), main)
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0)
