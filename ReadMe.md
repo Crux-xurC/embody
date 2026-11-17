@@ -2,7 +2,7 @@
 
 Language-specific helper modules that evaluate expressions in an interactive environment (a REPL or toplevel) and print each result as a finite, single-line record surrounded by fixed markers.
 
-- **Target-agnostic:** The caller chooses the expression by sending one line to the REPL. embody does not depend on the target module; it uses only the language's standard environment (the OCaml toplevel itself, or Haskell's `base`).
+- **Target-agnostic:** The caller chooses the expression by sending one line to the REPL. embody does not depend on the target module; it uses only the language's standard environment (the OCaml toplevel itself, Haskell's `base`, or Python's standard library).
 - **A result for each evaluation:** Timeouts, exceptions, and type errors are returned as marker-delimited records. Values that cannot be fully displayed, such as infinite structures and functions, receive a finite display and `repr=unsupported`.
 - **Giving values a body:** A value may be useful to inspect on screen but still need a representation to be recorded in a database. The name refers to temporarily giving such otherwise invisible values a body.
 
@@ -16,6 +16,7 @@ embody was created as a component used by Xipe Totec, a tool that evaluates and 
 |---|---|---|
 | `embody.ml` | OCaml (the standard `ocaml` toplevel) | Implemented; checked with OCaml 5.5.0 and dune 3.23.1 |
 | `embody.hs` | Haskell (GHCi) | Implemented; checked with GHC 9.10.3 |
+| `embody.py` | Python (`python -i`) | Implemented; checked with Python 3.13.12 |
 
 Each file can be loaded on its own. This repository does not provide build configuration (flake, dune, cabal, and so on); the caller decides how to load the module.
 
@@ -141,6 +142,38 @@ Embody.run "<id>" <timeout-in-microseconds> xt_<id>_w xt_<id>_x xt_<id>_s xt_<id
 - Functions returning `IO` are not executed as IO actions; their type is displayed. Approximate floating-point comparison is also unavailable; comparison uses `==`.
 
 **Out of scope:** An exception whose own message throws (for example, `error (show (1 `div` 0))`) and values whose `Show` implementation throws while producing text. An exception during error formatting can truncate the marker to `XT_ERROR_<id> crash `; the remaining output is GHCi's `*** Exception` message. The output is therefore not guaranteed to be a complete record in these cases (crux, 2026-10-16).
+
+---
+
+## Python (`embody.py`)
+
+Load this into `python -i`. It uses only the standard library and was checked with Python 3.13.12.
+
+**Starting Python** (an init script given to `python -i -q -u <init.py>`, with `PYTHONDONTWRITEBYTECODE=1` so nothing is written into the target):
+
+```python
+import sys
+sys.path.insert(0, "<path-to-embody>")
+import embody as _xt_embody
+del sys.path[0]
+_xt_embody.install({"calc": "/project/calc.py", "geo.shape": "/project/src/geo/shape.py"})
+```
+
+`install` puts an import hook first on `sys.meta_path` for the named modules. Importing one of them runs only its `def`, `async def`, `class`, `import` and `from … import` statements, assignments of literal values (`FACTOR = 3`), and `try` blocks made of those; other top-level statements (`print(…)`, `if __name__ == "__main__":`, `X = f()`) do not run. Imports between the target's own modules go through the same hook. Other packages import as usual.
+
+**Evaluating one entry** (one line):
+
+```python
+_xt_embody.run("<id>", "xt_<id>", <timeout-in-milliseconds>, "<module>", "<call>", <previous: None | ("exact", "…") | ("binary", "<base64>")>)
+```
+
+- `run` imports `<module>`, binds its top-level package name in `__main__`, and evaluates `<call>` (text, compiled inside `run`, so an argument that does not parse is a `crash` with `SyntaxError` instead of the REPL waiting for more input). The value is bound to `xt_<id>` in `__main__` whatever its repr.
+- `repr`: `repr()` read back with `ast.literal_eval` and equal → `exact`; otherwise a `pickle` that loads back equal → `binary` (`bin_base64=`); otherwise `unsupported`. Equality requires the same types, compares floats within `1e-9` and containers element by element; a value with a cycle is compared by its pickle bytes.
+- Exceptions become `crash` with the exception's type and message. Timeouts use SIGALRM (`signal.setitimer`), which stops loops running Python bytecode.
+- SIGINT raises `KeyboardInterrupt` in the current evaluation and the REPL continues reading.
+- There is no memory limit (Python can only limit the whole process).
+
+**Out of scope:** A loop inside C code (for example, `sum(itertools.count())`) is stopped neither by SIGALRM nor by SIGINT; the caller must end the process. The value is judged (`repr`, `pickle`) outside the time limit. An `async def` function returns its coroutine, which is not awaited (`unsupported`).
 
 ---
 
