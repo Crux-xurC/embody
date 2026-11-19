@@ -2,7 +2,7 @@
 
 Language-specific helper modules that evaluate expressions in an interactive environment (a REPL or toplevel) and print each result as a finite, single-line record surrounded by fixed markers.
 
-- **Target-agnostic:** The caller chooses the expression by sending one line to the REPL. embody does not depend on the target module; it uses only the language's standard environment (the OCaml toplevel itself, Haskell's `base`, or Python's standard library).
+- **Target-agnostic:** The caller chooses the expression by sending one line to the REPL. embody does not depend on the target module; it uses only the language's standard environment (the OCaml toplevel itself, Haskell's `base`, Python's standard library, or what comes with the .NET SDK).
 - **A result for each evaluation:** Timeouts, exceptions, and type errors are returned as marker-delimited records. Values that cannot be fully displayed, such as infinite structures and functions, receive a finite display and `repr=unsupported`.
 - **Giving values a body:** A value may be useful to inspect on screen but still need a representation to be recorded in a database. The name refers to temporarily giving such otherwise invisible values a body.
 
@@ -17,6 +17,7 @@ embody was created as a component used by Xipe Totec, a tool that evaluates and 
 | `embody.ml` | OCaml (the standard `ocaml` toplevel) | Implemented; checked with OCaml 5.5.0 and dune 3.23.1 |
 | `embody.hs` | Haskell (GHCi) | Implemented; checked with GHC 9.10.3 |
 | `embody.py` | Python (`python -i`) | Implemented; checked with Python 3.13.12 |
+| `embody.fsx` | F# (F# Interactive, `dotnet fsi`) | Implemented; checked with the .NET 8 SDK 8.0.419 |
 
 Each file can be loaded on its own. This repository does not provide build configuration (flake, dune, cabal, and so on); the caller decides how to load the module.
 
@@ -174,6 +175,47 @@ _xt_embody.run("<id>", "xt_<id>", <timeout-in-milliseconds>, "<module>", "<call>
 - There is no memory limit (Python can only limit the whole process).
 
 **Out of scope:** A loop inside C code (for example, `sum(itertools.count())`) is stopped neither by SIGALRM nor by SIGINT; the caller must end the process. The value is judged (`repr`, `pickle`) outside the time limit. An `async def` function returns its coroutine, which is not awaited (`unsupported`).
+
+---
+
+## F# (`embody.fsx`)
+
+Load this into `dotnet fsi --quiet`. It uses only what comes with the .NET SDK (FSharp.Core, System.Text.Json, and FSharp.Compiler.Service for `Embody.Load`) and was checked with the .NET 8 SDK 8.0.419. A project is built first (for example `dotnet build -o <dir>`) and its assembly referenced; scripts are loaded through definitions-only copies (below).
+
+**Starting F# Interactive** (an init script given to `dotnet fsi --quiet --use:<init.fsx>`; embody first, so the entries still end in records when the target is missing):
+
+```fsharp
+#load "<path-to-embody>/embody.fsx"
+Embody.setup "<the build's log, or empty>";;
+#r "<dir>/Target.dll";;
+```
+
+**Loading scripts without running their top level.** `#load` runs a script's top level. `Embody.Load.write "<root>" "<out dir>" ["scripts/tool.fsx"; …]` (run once, for example by `dotnet fsi --exec`) writes a copy of each script under the out dir, at the same relative path, in which only its definitions are left and every other top-level declaration is replaced by spaces (lines and columns kept): `let` functions; `let` values that run nothing (a literal, a name or a chain of names, a tuple, list or array of those, a lambda); types, exceptions, `open`, module abbreviations; nested modules and namespaces read the same way; hash directives except `#r "nuget: …"`. A script that does not parse prints `XT_LOAD_ERROR <path> <reason>`. Load each copy in a submission of its own (an init script stops at its first failing submission; stdin goes on):
+
+```fsharp
+Embody.trying "scripts/tool.fsx";;
+#load "<out dir>/scripts/tool.fsx"
+Embody.loaded "scripts/tool.fsx";;
+```
+
+`loaded` counts the script only when fsi compiled it (fsi does not compile a second time a file another script already `#load`-ed and failed on); the scripts tried and not loaded are named in the reason of a call to a module that is missing.
+
+**Evaluating one entry** (three submissions, each ended by `;;`):
+
+```fsharp
+Embody.start "<id>" <timeout-in-milliseconds> <None | (Some ("exact", "…")) | (Some ("binary", "<base64>"))>;;
+let xt_<id> = Embody.call (fun () -> Ns.Module.f (a) (b));;
+Embody.finish "<id>" "Ns.Module" "f" <number-of-arguments>;;
+```
+
+- F# Interactive cannot evaluate a string from inside a script, so the call is compiled by F# Interactive itself. A call that does not compile leaves `xt_<id>` unbound; its diagnostic goes to F# Interactive's own output (it cannot be captured), and `finish` prints a `crash` with what reflection can tell, in F#'s terms: no such module (with the build log's first error, or the scripts that did not load), a `private` or `internal` function, a value and not a function, how many curried arguments it takes (`let f a b` 2, `let f (a, b)` and `let f ()` 1), or its signature (`add : int -> int -> int`). `;;` does not end an open string, comment or bracket: the caller must not send such an argument (Xipe Totec checks it and sends `Embody.fail "<id>" "<reason>";;` instead).
+- `call` runs the call on a thread of its own under `ControlledExecution.Run` with the time limit: a running loop is aborted and F# Interactive reads on. A native wait (`Thread.Sleep`, I/O) is aborted only when it returns; `call` stops waiting at the limit plus 0.5 s and reports `timeout`, leaving that background thread. The value is bound to `xt_<id>` (the type's default value after a crash or a timeout). Because the call is stopped where it is, what it was changing may be left half done: the caller should start a new session after a `timeout`.
+- `repr`: `exact` when `embody.fsx`'s own F# literal writer covers the value and its reader reads the text back to an equal value — bool, char, string, the integer types with their suffixes (`1L`, `1uy` …), float, float32, decimal, unit, enums by name (`Ns.Color.Red`), 1-dimensional arrays (`[|1; 2|]`), F# lists, `List<T>` (`ResizeArray [1; 2]`), `Dictionary<K, V>` with the default comparer (`System.Collections.Generic.Dictionary(dict [("a", 1)])`), options, tuples and struct tuples up to 7 elements, F# records (`{ Ns.Point.X = 1.0; Y = 2.0 }`) and unions (`Ns.Shape.Rect (2.0, 3.0)`, `Ns.Shape.Empty`) with public representations, and `null`. Otherwise `binary` through System.Text.Json (`IncludeFields`) when serialize → deserialize → serialize gives the same text and every instance field is public or a public property's backing field; `bin_base64=` is the type's assembly-qualified name, a newline and the JSON. Otherwise `unsupported`. `display` is the literal for `exact` values, else the type's own `ToString()` when it overrides it, else F#'s `%A`.
+- `compare`: an `exact` previous value is read back as the new value's type (types equal, floats within `1e-9`, containers, records and unions element by element); a `binary` one compares by its type name and JSON text.
+- `type=` is F#'s name: `int`, `int[]`, `int list`, `string option`, `struct (int * string)`, `int -> int` for a function, a union's own type (not its case's class), else the .NET name with its namespace (`Sample.Point`, `System.Collections.Generic.List<int>`); a type F# Interactive compiled loses its `FSI_0002.` prefix.
+- SIGINT makes F# Interactive print `- Interrupt` and read on with its bindings. There is no memory limit.
+
+**Out of scope:** a native wait longer than the time limit keeps its thread running after `timeout`; the value is judged (`display`, JSON) outside the time limit; private state reached only through a nested object is not seen by the `binary` check; a script whose definitions use a value its top level computes does not load from its copy.
 
 ---
 
