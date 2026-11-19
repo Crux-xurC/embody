@@ -18,6 +18,7 @@ embody was created as a component used by Xipe Totec, a tool that evaluates and 
 | `embody.hs` | Haskell (GHCi) | Implemented; checked with GHC 9.10.3 |
 | `embody.py` | Python (`python -i`) | Implemented; checked with Python 3.13.12 |
 | `embody.fsx` | F# (F# Interactive, `dotnet fsi`) | Implemented; checked with the .NET 8 SDK 8.0.419 |
+| `embody.scala` | Scala 3 (Scala's REPL, `dotty.tools.repl.Main`) | Implemented; checked with Scala 3.3.6 on JDK 21 and 27 |
 
 Each file can be loaded on its own. This repository does not provide build configuration (flake, dune, cabal, and so on); the caller decides how to load the module.
 
@@ -216,6 +217,50 @@ Embody.finish "<id>" "Ns.Module" "f" <number-of-arguments>;;
 - SIGINT makes F# Interactive print `- Interrupt` and read on with its bindings. There is no memory limit.
 
 **Out of scope:** a native wait longer than the time limit keeps its thread running after `timeout`; the value is judged (`display`, JSON) outside the time limit; private state reached only through a nested object is not seen by the `binary` check; a script whose definitions use a value its top level computes does not load from its copy.
+
+---
+
+## Scala (`embody.scala`)
+
+Load this into Scala 3's REPL. It uses only what the REPL itself carries: the Scala 3 library, the JDK, and the compiler on the REPL's class path (its parser for `Embody.Load`, its `dotty.tools.repl.ScriptEngine` for reading a literal back). It was checked with Scala 3.3.6 on JDK 21 and 27. Start the REPL with the target on the JVM's class path too, so the ScriptEngine reads the target's values back:
+
+```
+java -cp "<compiler and library jars of the project's Scala version>:<the project's class path>" dotty.tools.repl.Main -usejavacp
+```
+
+**Starting** (REPL inputs, one per line; embody first, so the entries still end in records when the target is missing):
+
+```scala
+:load <path-to-embody>/embody.scala
+Embody.setup("<the build's log, or empty>")
+Embody.ready()            // prints XT_READY: a REPL without embody never looks ready
+```
+
+`Embody.protocol` (today `1`) is the version of these inputs; Xipe Totec checks it before starting the REPL, so an embody older than the adapter is named instead of never looking ready.
+
+**Loading scripts without running their top level.** `:load` runs a script's top level. `Embody.Load.write("<root>", "<out dir>", List("scripts/tool.sc", …))` writes a copy of each script under the out dir, at the same relative path, holding only its definitions inside an object named by its path without `.sc` (`tool` for `tool.sc`, `` `scripts/tool` `` for `scripts/tool.sc`: scripts of one file name in different directories stay apart; called as `` `scripts/tool`.f(…) ``) and a last line `Embody.markLoaded("<path>")`: `def`s; `val`s that run nothing (a literal, a name or a chain of names, a tuple or a standard collection of those, a lambda); classes, traits, objects, enums, type aliases, givens, extensions; `import`s and `export`s. `println(…)`, `val n = f()` and `//> using` directives (comments: nothing is fetched) are left out. A script that does not parse prints `XT_LOAD_ERROR <path> <reason>`. Then, per script:
+
+```scala
+Embody.trying("scripts/tool.sc")
+:load <out dir>/scripts/tool.sc
+```
+
+**Evaluating one entry** (three REPL inputs, each a complete line):
+
+```scala
+Embody.start("<id>", <timeout-in-milliseconds>, <None | Some(("exact", "…")) | Some(("binary", "<base64>"))>)
+val xt_<id> = Embody.call(() => pkg.Obj.f((a), (b))((c)))
+Embody.finish("<id>", "pkg.Obj", "f", List(2, 1))
+```
+
+- The REPL compiles the call. A call that does not compile leaves `xt_<id>` unbound and the compiler's message on the REPL's output, and `finish` prints a `crash` with what reflection can tell, in Scala's terms: no such object (with the build log's first `[error]`, `XT_BUILD_ERROR` or `XT_BUILD_NOTE` line, or the scripts that did not load), no such function, a `private` one, how many arguments it takes, its signature. The last argument of `finish` is the number of arguments per parameter list. The REPL waits silently for the rest of an unclosed bracket, string or comment: the caller must not send such an argument (Xipe Totec checks it and sends `Embody.fail("<id>", "<reason>")` instead).
+- `call` runs the call, and the value's display, on a thread of its own and waits for the time limit. The JVM cannot stop a running thread: at the limit the thread is interrupted (a sleep or a wait ends) and left running, and the entry is a `timeout`; the caller should start a new session. The value is bound to `xt_<id>` (`null`, the type's default, after a crash or a timeout). When the call returns, `XT_CALLED_<id>` is printed before the value is judged.
+- `repr`: `exact` when `embody.scala`'s own literal writer covers the value and the ScriptEngine evaluates the text back to an equal value — `Int`, `Long` (`1L`), `Short` and `Byte` (`(1: Short)`), `Double` (`Double.NaN` …), `Float` (`1.5f`), `Char`, `Boolean`, `Unit`, `String`, `BigInt`, `BigDecimal`, `Option`, `Either`, tuples, `List`, `Vector`, `Set`, `Map`, arrays (`Array(1, 2)`, `Array.empty[Int]`), mutable `ArrayBuffer`, `ListBuffer`, `HashMap`, `HashSet`, case classes with their package (`sample.Point(2.0, 3.0)`), Scala 3 and Java enums (`sample.Color.Red`), objects, and `null`. Otherwise `binary` through Java serialization when it reads back to an equal value (`bin_base64=` the serialized bytes); otherwise `unsupported` (functions, `LazyList`, a class without structural equality). `display` is the literal for `exact` values, else `toString` (`<function>` for a function).
+- `compare`: an `exact` previous value is evaluated by the ScriptEngine and compared (floats within `1e-9`, containers and case classes element by element); a `binary` one is deserialized and compared the same way.
+- `type=` is the running value's, as Scala writes it: `Int`, `List[Int]`, `Map[String, Int]`, `(Int, String)`, `Option[?]` for `None`, `sample.Point`; erasure leaves the static type unknown.
+- SIGINT ends Scala's REPL. There is no memory limit.
+
+**Out of scope:** the REPL's own echo of `val xt_<id> = …` runs `toString` once more outside the time limit (only on a value whose display finished within it); a value of a class defined in the REPL or a script cannot be read back by the ScriptEngine (it is `binary` or `unsupported`); a script whose definitions use a value its top level computes does not load from its copy; Scala 2.
 
 ---
 
