@@ -2,11 +2,13 @@
 
 Language-specific helper modules that evaluate expressions in an interactive environment (a REPL or toplevel) and print each result as a finite, single-line record surrounded by fixed markers.
 
-- **Target-agnostic:** The caller chooses the expression by sending one line to the REPL. embody does not depend on the target module; it uses only the language's standard environment (the OCaml toplevel itself, Haskell's `base`, Python's standard library, or what comes with the .NET SDK).
+- **Target-agnostic:** The caller chooses the expression by sending one line to the REPL. embody does not depend on the target module; it uses only the language's standard environment (the OCaml toplevel itself, Haskell's `base`, Python's standard library, what comes with the .NET SDK, or what Scala's REPL and the JDK carry).
 - **A result for each evaluation:** Timeouts, exceptions, and type errors are returned as marker-delimited records. Values that cannot be fully displayed, such as infinite structures and functions, receive a finite display and `repr=unsupported`.
 - **Giving values a body:** A value may be useful to inspect on screen but still need a representation to be recorded in a database. The name refers to temporarily giving such otherwise invisible values a body.
 
-embody was created as a component used by Xipe Totec, a tool that evaluates and records functions from functional-language projects as calculation rows. Other tools can use it by following the output contract below.
+embody was created as a component used by Xipe Totec, a tool that evaluates and records a project's functions as calculation rows (OCaml, Haskell, Python, F#, C#, Scala, Java; Elixir needs no embody). Other tools can use it by following the output contract below.
+
+A language whose REPL is another language's has a **seam** next to that REPL's embody: `embody.cs` for C# in F# Interactive (with `embody.fsx`), `embody.java` for Java in Scala's REPL (with `embody.scala`). The REPL's own embody stays that language's alone and asks the seam only where it has no answer of its own.
 
 ---
 
@@ -370,7 +372,7 @@ After adding a language, update this file's language table and the corresponding
 
 ## Used by
 
-- **Xipe Totec:** On every evaluation pass, it loads the language's embody module into the REPL and wraps each call with it. By default, Xipe Totec looks for embody in the sibling `../embody/` directory; `XIPE_TOTEC_EMBODY_DIR` overrides that location.
+- **Xipe Totec:** On every evaluation pass, it loads the language's embody module into the REPL (and, for C# and Java, builds the seam in a temporary directory and registers it) and wraps each call with it. Before starting, it checks the protocols of `embody.scala`, `embody.cs` and `embody.java`, so an older embody is named instead of never looking ready. By default, Xipe Totec looks for embody in the sibling `../embody/` directory; `XIPE_TOTEC_EMBODY_DIR` overrides that location.
 
 ---
 
