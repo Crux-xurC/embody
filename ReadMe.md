@@ -19,6 +19,7 @@ embody was created as a component used by Xipe Totec, a tool that evaluates and 
 | `embody.py` | Python (`python -i`) | Implemented; checked with Python 3.13.12 |
 | `embody.fsx` | F# (F# Interactive, `dotnet fsi`) | Implemented; checked with the .NET 8 SDK 8.0.419 |
 | `embody.scala` | Scala 3 (Scala's REPL, `dotty.tools.repl.Main`) | Implemented; checked with Scala 3.3.6 on JDK 21 and 27 |
+| `embody.cs` | C#, through F# Interactive: a seam for `embody.fsx` | Implemented (the seam alone; Xipe Totec's C# adapter to come); checked with the .NET 8 SDK 8.0.419 |
 
 Each file can be loaded on its own. This repository does not provide build configuration (flake, dune, cabal, and so on); the caller decides how to load the module.
 
@@ -189,7 +190,10 @@ Load this into `dotnet fsi --quiet`. It uses only what comes with the .NET SDK (
 #load "<path-to-embody>/embody.fsx"
 Embody.setup "<the build's log, or empty>";;
 #r "<dir>/Target.dll";;
+Embody.reference "<dir>/Target.dll";;
 ```
+
+`Embody.reference` names a `#r`-ed assembly: fsi loads it only when a submission first uses it, so `finish` loads the named ones before it diagnoses a call that did not compile (the same assembly fsi loads), or a call failing before any other has run would find no module.
 
 **Loading scripts without running their top level.** `#load` runs a script's top level. `Embody.Load.write "<root>" "<out dir>" ["scripts/tool.fsx"; …]` (run once, for example by `dotnet fsi --exec`) writes a copy of each script under the out dir, at the same relative path, in which only its definitions are left and every other top-level declaration is replaced by spaces (lines and columns kept): `let` functions; `let` values that run nothing (a literal, a name or a chain of names, a tuple, list or array of those, a lambda); types, exceptions, `open`, module abbreviations; nested modules and namespaces read the same way; hash directives except `#r "nuget: …"`. A script that does not parse prints `XT_LOAD_ERROR <path> <reason>`. Load each copy in a submission of its own (an init script stops at its first failing submission; stdin goes on):
 
@@ -218,13 +222,49 @@ A type's static member is called the same way, as a method: `let xt_<id> = Embod
 - `type=` is F#'s name: `int`, `int[]`, `int list`, `string option`, `struct (int * string)`, `int -> int` for a function, a union's own type (not its case's class), else the .NET name with its namespace (`Sample.Point`, `System.Collections.Generic.List<int>`); a type F# Interactive compiled loses its `FSI_0002.` prefix.
 - SIGINT makes F# Interactive print `- Interrupt` and read on with its bindings. There is no memory limit.
 
-**Helpers: another .NET language's values, through a seam.** `embody.fsx` stays F#'s alone; a small helper written for another language (for C#, `embody.cs`, to come) registers itself after embody is loaded, with `Embody.register { Embody.Helper.Covers = …; Head = …; Parts = …; Split = …; Make = …; Diagnose = … }`, every field a `Func` over .NET's own types, so a helper in any .NET language can fill it. embody asks the helpers only where it has no answer of its own, the first registered first; a helper that throws gives no answer.
+**Helpers: another .NET language's values, through a seam.** `embody.fsx` stays F#'s alone; a small helper written for another language (for C#, `embody.cs`, below) registers itself after embody is loaded, with `Embody.register { Embody.Helper.Covers = …; Head = …; Parts = …; Split = …; Make = …; Diagnose = … }`, every field a `Func` over .NET's own types, so a helper in any .NET language can fill it; or, for a helper written as a class with public static methods of those names and types, `Embody.registerType typeof<Ns.Class>`. embody asks the helpers only where it has no answer of its own, the first registered first; a helper that throws gives no answer.
 
 - `Covers(type)`: whether values of that type are the helper's
 - `Head(type)`, `Parts(type)`, `Split(value)`, `Make(type, args)`: such a value is written as a call of its constructor, `Head(arg, …)` (`Sample.Point(2.0, 3.0)`), the arguments in the order of `Parts`, each written by embody's own writer (a number, a string, a `List` inside is the literal it always is; a covered value inside is written the same way), so the text is F# a later row takes as it is. It is read back by embody's reader (the head, then each argument as its type) and made with `Make`; `exact` and `compare` follow, two such values being equal argument by argument (a `List` inside element by element). A value `Split` gives `null` for is not written: `binary` or `unsupported` as before. A head must be a dotted name (no type arguments)
 - `Diagnose(module, name, count)`: why a call that did not compile failed, in the helper's language's terms; `null` when the module is not its own (embody's F# diagnosis follows)
 
 **Out of scope:** a native wait longer than the time limit keeps its thread running after `timeout`; the value is judged (`display`, JSON) outside the time limit; private state reached only through a nested object is not seen by the `binary` check; a script whose definitions use a value its top level computes does not load from its copy.
+
+---
+
+## C# through F# Interactive (`embody.cs`)
+
+C# text cannot be evaluated in the .NET SDK (Roslyn's scripting is not in it), so C# calls are compiled by F# Interactive with `embody.fsx` (above), and `embody.cs` is the **seam**: C#'s meaning brought to F# on the side that receives the result. The arguments stay F# expressions. It uses only the framework, works by reflection over what is loaded (it does not reference the target), and was checked with the .NET 8 SDK 8.0.419.
+
+**Building it**: a class library of its own, outside the target, compiling this one file, for example in a temp dir:
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>EmbodyCs</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup><Compile Include="<path-to-embody>/embody.cs" /></ItemGroup>
+</Project>
+```
+
+`dotnet build <dir> --source <an empty directory> -o <out>` builds it without fetching anything (about 2 s). `EmbodyCs.Seam.Protocol` (today `1`) is the version of what follows; a caller checks it before starting (`public const int Protocol = 1;` in the file).
+
+**Starting** (after `embody.fsx`'s own lines, with the target built and referenced the same way):
+
+```fsharp
+#r "<out>/EmbodyCs.dll";;
+Embody.registerType typeof<EmbodyCs.Seam>;;
+```
+
+**Evaluating one entry**: `embody.fsx`'s three submissions, the call being C#'s static method as F# calls it, `Ns.Type.Method((a), (b))`. A method returning `Task`, `Task<T>`, `ValueTask` or `ValueTask<T>` is called inside `EmbodyCs.Seam.Await(…)`, so the value is the `T` (a `Task` gives `()`); the wait is on the call's own thread, under embody's time limit.
+
+- `repr`: a public, non-generic C# record whose public properties are exactly its primary constructor's parameters is `exact`, written as that constructor's call with F# literals inside (`Sample.Geo.Point(2.0, 3.0)`, `Sample.Bag("x", ResizeArray [0; 1])`): F# a later row takes as it is. It is read back by `embody.fsx`'s reader, and `compare` goes property by property (a `List` inside element by element, where C#'s own `==` compares the list by reference). Other records (state set outside the primary constructor, generic ones) and classes are `binary` or `unsupported` as `embody.fsx` judges them; an anonymous type is `unsupported` (`display` its own `{ N = 1, S = 1 }`)
+- Failures in C#'s terms, for a type of a C# assembly (F#'s diagnosis for anything else): not public; no such method; a property, not a method; an instance method (`only public static methods are called`, with its signature); `private`, `internal` or `protected`; how many arguments the public static overloads take (`out` parameters left out, optional ones may be, `params` any), with their C# signatures (`static string Over(int x); static string Over(string s)`); else the arguments do not fit those signatures (fsi's message is in the REPL output)
+
+**Out of scope:** C# text as an argument (the arguments are F#); a generic method whose type parameter appears in no parameter is called by F# as `obj` (the caller must not send it: Xipe Totec refuses such a row); `out` and `ref` parameters are F#'s (an `out` comes back in a tuple); records with type arguments, and positional records with extra properties set outside the constructor, are not written as calls.
 
 ---
 

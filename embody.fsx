@@ -6,6 +6,7 @@
 //     #load "<path-to-embody>/embody.fsx"
 //     Embody.setup "<build log, or empty>";;
 //     #r "<the project's built assembly>.dll"
+//     Embody.reference "<the same path>";;
 //
 // and then, three submissions per evaluation:
 //
@@ -65,6 +66,17 @@ let private oneLine (text: string) =
 
 /// The build's log (read only to explain a call that did not compile); "" for none.
 let setup (log: string) = buildLog <- log
+
+let private references = Generic.List<string>()
+
+/// The caller `#r`-ed this assembly. fsi loads a referenced assembly only when a submission first uses it,
+/// so a call that does not compile before any other has run would find no type in it; `finish` loads the
+/// references first (the same assembly fsi loads: the default load context, by path).
+let reference (path: string) = references.Add path
+
+let private loadReferences () =
+    for p in references do
+        try Assembly.LoadFrom p |> ignore with _ -> ()
 
 let private tried = Generic.List<string>()
 let private done' = Generic.HashSet<string>()
@@ -170,6 +182,20 @@ let private helpers = Generic.List<Helper>()
 
 /// Register a helper; the ones registered first are asked first.
 let register (h: Helper) = helpers.Add h
+
+/// Register the helper a type's public static methods make, one per field of `Helper` with the same name,
+/// parameters and result (`Covers(Type) : bool`, …): a helper written as a class in its own language
+/// (`Embody.registerType typeof<EmbodyCs.Seam>`).
+let private staticDelegate<'D when 'D :> Delegate> (t: Type) (name: string) : 'D =
+    match t.GetMethod(name, BindingFlags.Public ||| BindingFlags.Static) with
+    | null -> failwithf "%s has no public static %s" t.FullName name
+    | m -> Delegate.CreateDelegate(typeof<'D>, m) :?> 'D
+
+let registerType (t: Type) =
+    let f name = staticDelegate t name
+    register
+        { Covers = f "Covers"; Head = f "Head"; Parts = f "Parts"; Split = f "Split"; Make = f "Make"
+          Diagnose = f "Diagnose" }
 
 let private covering (t: Type) =
     helpers |> Seq.tryFind (fun h -> try h.Covers.Invoke t with _ -> false)
@@ -807,6 +833,7 @@ let finish (id: string) (module0: string) (name: string) (argc: int) =
             current <- None
             match entry.Outcome with
             | NotRun ->
+                loadReferences ()
                 // a helper's own terms first (a C# type's methods), else F#'s
                 let why =
                     helpers
