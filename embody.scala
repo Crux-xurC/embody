@@ -12,6 +12,10 @@
 //
 // A call that does not compile leaves `xt_<id>` unbound and the compiler's message on the REPL's
 // output; `finish` then reports a `crash` with what reflection can tell.
+//
+// A seam for another JVM language (`embody.java` for Java) registers a helper after `Embody.setup`
+// (`Embody.registerType(classOf[…])`): its values are written as Scala source and its failures told in
+// its terms.
 
 object Embody {
   import java.io.{ByteArrayInputStream, ByteArrayOutputStream, ObjectInputStream, ObjectOutputStream, ObjectStreamClass, OutputStream, PrintStream}
@@ -41,10 +45,10 @@ object Embody {
   private def oneLine(text: String): String = text.replace("\r", "\\r").replace("\n", "\\n")
 
   /**
-   * The version of the protocol with Xipe Totec (the three inputs, `ready`, `Load`): Xipe Totec checks it
+   * The version of the protocol with Xipe Totec (the three inputs, `ready`, `Load`; 2: `registerType`): Xipe Totec checks it
    * before starting, so an older embody is named instead of never looking ready.
    */
-  val protocol = 1
+  val protocol = 2
 
   /** Prints the ready marker: the caller's ready probe goes through embody, so a REPL without it never looks ready. */
   def ready(): Unit = write("XT_" + "READY\n")
@@ -121,6 +125,53 @@ object Embody {
     case _ if isFunction(v) => "Function"
     case _ => sourceName(v.getClass)
   }
+
+  // --- helpers: another JVM language's values, through a seam ------------------------------------
+  //
+  // A seam (another language's own helper, such as `embody.java` for Java) registers itself at the start
+  // with `registerType`. embody.scala knows nothing of that language: it asks the helpers only where its
+  // own writer, equality and diagnosis have no answer. Reading a value back stays embody's own (the text is
+  // Scala it evaluates), so a helper only writes a value as Scala source -- given embody's writer for the
+  // values inside -- and takes one apart for `equal`. Only the JDK's own types cross, so a helper written
+  // in any JVM language can answer.
+
+  private final class Helper(
+      val covers: Class[?] => Boolean,
+      val write: (Any, Any => String) => String,
+      val parts: Any => Array[AnyRef],
+      val diagnose: (String, String, Int) => String)
+
+  private val helpers = mutable.ArrayBuffer.empty[Helper]
+
+  /**
+   * Register the helper a class's public static methods make (the first registered is asked first):
+   *
+   *   - `boolean covers(Class<?> c)`: whether values of that class are the helper's
+   *   - `String write(Object v, java.util.function.Function<Object, String> inner)`: `v` as Scala source,
+   *     `inner` writing a value inside it (null: it cannot); null when `v` cannot be written
+   *   - `Object[] parts(Object v)`: what `v` is equal by, compared one by one; null: its own `equals`
+   *   - `String diagnose(String module, String name, int count)`: why a call of `module.name` with `count`
+   *     arguments did not compile, in the helper's language's terms; null when `module` is not its own
+   *
+   * A throw is taken as "no answer".
+   */
+  def registerType(c: Class[?]): Unit = {
+    def m(name: String, ps: Class[?]*): Method = c.getMethod(name, ps*)
+    val covers = m("covers", classOf[Class[?]])
+    val write = m("write", classOf[Object], classOf[java.util.function.Function[?, ?]])
+    val parts = m("parts", classOf[Object])
+    val diagnose = m("diagnose", classOf[String], classOf[String], java.lang.Integer.TYPE)
+    helpers += new Helper(
+      cls => covers.invoke(null, cls).asInstanceOf[Boolean],
+      (v, inner) =>
+        write.invoke(null, v.asInstanceOf[AnyRef], new java.util.function.Function[Object, String] { def apply(x: Object): String = inner(x) })
+          .asInstanceOf[String],
+      v => parts.invoke(null, v.asInstanceOf[AnyRef]).asInstanceOf[Array[AnyRef]],
+      (module0, name, count) => diagnose.invoke(null, module0, name, Integer.valueOf(count)).asInstanceOf[String])
+  }
+
+  private def covering(v: Any): Option[Helper] =
+    if (v == null) None else helpers.find(h => try h.covers(v.getClass) catch { case _: Throwable => false })
 
   // --- literals ----------------------------------------------------------------------------------
 
@@ -213,6 +264,10 @@ object Embody {
       case e: scala.reflect.Enum if e.productArity == 0 => s"${sourceName(enumClass(e))}.${e.productPrefix}"
       case p: Product if isCaseClass(v) => s"${sourceName(v.getClass)}(${all(p.productIterator.toSeq)})"
       case _ if isModuleValue(v) => sourceName(v.getClass)
+      case _ if covering(v).isDefined =>
+        // a helper's value: its own text, embody writing the values inside
+        val inner: Any => String = x => try lit(x, depth + 1) catch { case _: MatchError | _: TooDeep => null }
+        Option(try covering(v).get.write(v, inner) catch { case _: Throwable => null }).getOrElse(throw new MatchError(v))
       case _ => throw new MatchError(v)
     }
   }
@@ -250,6 +305,13 @@ object Embody {
     case (x: scala.collection.Seq[?], y: scala.collection.Seq[?]) => x.length == y.length && x.iterator.zip(y.iterator).forall(equal(_, _))
     case (x: Product, y: Product) if x.getClass == y.getClass && x.productArity > 0 && !isFunction(x) =>
       x.productArity == y.productArity && x.productIterator.zip(y.productIterator).forall(equal(_, _))
+    case _ if a != null && b != null && a.getClass == b.getClass && covering(a).isDefined =>
+      // a helper's value: part by part (floats within 1e-9, containers element by element), else its own equals
+      val h = covering(a).get
+      (try Option(h.parts(a)).zip(Option(h.parts(b))) catch { case _: Throwable => None }) match {
+        case Some((x, y)) => x.length == y.length && x.indices.forall(i => equal(x(i), y(i)))
+        case None => a == b
+      }
     case _ => a == b
   }
 
@@ -460,7 +522,13 @@ object Embody {
       case Some(entry) if entry.id == id =>
         current = None
         entry.outcome match {
-          case Outcome.NotRun => s"XT_ERROR_${id} crash ${oneLine(diagnose(module0, name, shape))}\n"
+          case Outcome.NotRun =>
+            // a helper's own terms first (a Java class's methods), else Scala's
+            val why = helpers.iterator
+              .flatMap(h => Option(try h.diagnose(module0, name, shape.sum) catch { case _: Throwable => null }))
+              .nextOption()
+              .getOrElse(diagnose(module0, name, shape))
+            s"XT_ERROR_${id} crash ${oneLine(why)}\n"
           case Outcome.Crash(r) => s"XT_ERROR_${id} crash ${oneLine(r)}\n"
           case Outcome.TimedOut => s"XT_ERROR_${id} timeout\n"
           case Outcome.Value(v, l, shown) =>

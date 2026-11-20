@@ -20,6 +20,7 @@ embody was created as a component used by Xipe Totec, a tool that evaluates and 
 | `embody.fsx` | F# (F# Interactive, `dotnet fsi`) | Implemented; checked with the .NET 8 SDK 8.0.419 |
 | `embody.scala` | Scala 3 (Scala's REPL, `dotty.tools.repl.Main`) | Implemented; checked with Scala 3.3.6 on JDK 21 and 27 |
 | `embody.cs` | C#, through F# Interactive: a seam for `embody.fsx` | Implemented; used by Xipe Totec's C# adapter; checked with the .NET 8 SDK 8.0.419 |
+| `embody.java` | Java, through Scala's REPL: a seam for `embody.scala` | Implemented; used by Xipe Totec's Java adapter; checked with OpenJDK 21.0.10 and Scala 3.3.6 |
 
 Each file can be loaded on its own. This repository does not provide build configuration (flake, dune, cabal, and so on); the caller decides how to load the module.
 
@@ -284,7 +285,7 @@ Embody.setup("<the build's log, or empty>")
 Embody.ready()            // prints XT_READY: a REPL without embody never looks ready
 ```
 
-`Embody.protocol` (today `1`) is the version of these inputs; Xipe Totec checks it before starting the REPL, so an embody older than the adapter is named instead of never looking ready.
+`Embody.protocol` (today `2`; 2 since the helper entry below) is the version of these inputs; Xipe Totec checks it before starting the REPL, so an embody older than the adapter is named instead of never looking ready.
 
 **Loading scripts without running their top level.** `:load` runs a script's top level. `Embody.Load.write("<root>", "<out dir>", List("scripts/tool.sc", …))` writes a copy of each script under the out dir, at the same relative path, holding only its definitions inside an object named by its path without `.sc` (`tool` for `tool.sc`, `` `scripts/tool` `` for `scripts/tool.sc`: scripts of one file name in different directories stay apart; called as `` `scripts/tool`.f(…) ``) and a last line `Embody.markLoaded("<path>")`: `def`s; `val`s that run nothing (a literal, a name or a chain of names, a tuple or a standard collection of those, a lambda); classes, traits, objects, enums, type aliases, givens, extensions; `import`s and `export`s. `println(…)`, `val n = f()` and `//> using` directives (comments: nothing is fetched) are left out. A script that does not parse prints `XT_LOAD_ERROR <path> <reason>`. Then, per script:
 
@@ -309,6 +310,43 @@ Embody.finish("<id>", "pkg.Obj", "f", List(2, 1))
 - SIGINT ends Scala's REPL. There is no memory limit.
 
 **Out of scope:** the REPL's own echo of `val xt_<id> = …` runs `toString` once more outside the time limit (only on a value whose display finished within it); a value of a class defined in the REPL or a script cannot be read back by the ScriptEngine (it is `binary` or `unsupported`); a script whose definitions use a value its top level computes does not load from its copy; Scala 2.
+
+**Helpers: another JVM language's values, through a seam.** `embody.scala` stays Scala's alone; a small helper written for another language (for Java, `embody.java`, below) registers itself after embody is loaded, with `Embody.registerType(classOf[<its class>])`. The class's public static methods are the answers, over the JDK's own types only, so a helper in any JVM language can give them; each may answer `null` (no answer), and a throw is taken as none:
+
+- `boolean covers(Class<?> c)`: whether values of that class are the helper's
+- `String write(Object v, java.util.function.Function<Object, String> inner)`: `v` as Scala source, `inner` writing a value inside it (embody's own writer: a number, a string, an array or a covered value inside is written as it always is); asked only where embody's writer has no literal. The text is read back by embody itself (it evaluates it), so `exact` keeps its meaning
+- `Object[] parts(Object v)`: what `v` is equal by; `equal` compares two values of one covered class part by part (floats within 1e-9, containers element by element), else by their own `equals`
+- `String diagnose(String module, String name, int count)`: why a call that did not compile failed, in the helper's language's terms; asked before embody's own Scala diagnosis
+
+---
+
+## Java through Scala's REPL (`embody.java`)
+
+Java has no REPL that evaluates one call over a pipe and goes on, so Java calls are compiled by Scala 3's REPL with `embody.scala` (above), and `embody.java` is the **seam**: Java's meaning brought to Scala on the side that receives the result. The arguments stay Scala expressions. It uses only the JDK, works by reflection over what is loaded (it does not reference the target), and was checked with OpenJDK 21.0.10 and Scala 3.3.6.
+
+**Compiling it**: alone, `javac -d <dir> <path-to-embody>/embody.java` (its class is `embodyjava.embody`, named as its file so it compiles as it is). `embodyjava.embody.PROTOCOL` (today `1`) is the version of what follows; a caller checks it before starting (`public static final int PROTOCOL = 1;` in the file).
+
+**Starting**: the target on the JVM's class path, so `embody.scala`'s read-back sees its types (`scala -classpath` gives the class path to the REPL only):
+
+```
+java -cp "<scala's home>/lib/*:<dir>:<the target's classes and class path>" dotty.tools.repl.Main -usejavacp
+```
+
+then `embody.scala`'s own lines, with the seam registered after `Embody.setup`:
+
+```scala
+:load <path-to-embody>/embody.scala
+Embody.setup("<the build's log, or empty>")
+Embody.registerType(classOf[embodyjava.embody])
+Embody.ready()
+```
+
+**Evaluating one entry**: `embody.scala`'s three inputs, the call being Java's static method as Scala calls it, `pkg.Type.method((a), (b))`. A method returning `CompletableFuture`, `CompletionStage` or `Future` is called inside `embodyjava.embody.await(…)`, so the value is the `T` (the wait is on the call's own thread, under embody's time limit; the method's own exception is thrown as a direct call would). A varargs argument is an array passed as `(Array(1, 2))*`.
+
+- `repr`: a public record is `exact`, written as its canonical constructor's call (`sample.Point(2.0, 3.0)`); so are `java.util`'s `ArrayList`, `LinkedList`, `HashSet`, `LinkedHashSet`, `HashMap`, `LinkedHashMap`, `TreeSet` and `TreeMap` with their natural order, the immutable `List.of` / `Set.of` / `Map.of` kinds and `Optional`, written as their constructors with a boxed element type written when the elements share one class (`java.util.ArrayList[java.lang.Integer](java.util.List.of[java.lang.Integer](0, 1))`, `java.util.Optional.of[String]("yes")`, `java.util.HashMap[String, java.lang.Integer](java.util.Map.ofEntries[String, java.lang.Integer](java.util.Map.entry[String, java.lang.Integer]("a", 2)))`): Scala would type `List.of(0, 1)` as a list of `Int`, which does not fit a `List<Integer>` parameter. A record's components, a list's elements and an `Optional`'s value are compared one by one. Other values are `binary` when `Serializable`, else `unsupported`, as `embody.scala` judges them
+- Failures in Java's terms, for a Java class (Scala's diagnosis for anything else): not public; no such method; a field, not a method; an instance method (`only public static methods are called`, with its signature); `private`, `protected` or package-private; how many arguments the public static overloads take, with their Java signatures (`static String over(double); static String over(int)`); else the arguments do not fit those signatures (the compiler's message is in the REPL output). An exception, checked or not, is its own text
+
+**Out of scope:** Java text as an argument (the arguments are Scala); a generic method whose type parameter appears in no parameter is called by Scala with `Nothing` (the caller must not send it: Xipe Totec refuses such a row); collections with `null` elements or a comparator, and generic element types, are not written with a type argument (a text that does not read back is not `exact`).
 
 ---
 
