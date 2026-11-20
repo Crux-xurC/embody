@@ -652,13 +652,51 @@ let private signature (name: string) (m: MethodInfo) =
                   String.Join(" * ", group) ]
     name + " : " + String.Join(" -> ", args @ [ typeName m.ReturnType ])
 
-// why `Ns.Module.f (a) (b)` with `argc` arguments did not compile, as far as reflection can tell
+// a static member as `Show(float, int) : string`, `Scale(float)(Point) : Point`: one group per curried group
+let private memberSignature (name: string) (m: MethodInfo) =
+    let ps = m.GetParameters() |> Array.map (fun p -> typeName p.ParameterType)
+    let groups =
+        match attr<CompilationArgumentCountsAttribute> m with
+        | None -> [ ps ]
+        | Some a ->
+            let mutable k = 0
+            [ for n in a.Counts ->
+                  let group = ps.[k .. k + n - 1]
+                  k <- k + n
+                  group ]
+    name + String.Join("", groups |> List.map (fun g -> "(" + String.Join(", ", g) + ")")) + " : " + typeName m.ReturnType
+
+// why `Ns.Type.M((a), (b))` with `argc` arguments did not compile: the type's static members of that name
+let private diagnoseMember (t: Type) (type0: string) (name: string) (argc: int) =
+    let flags = BindingFlags.Public ||| BindingFlags.NonPublic ||| BindingFlags.Static
+    let all = t.GetMethods flags |> Array.filter (fun m -> m.Name = name)
+    let publics = all |> Array.filter (fun m -> m.IsPublic)
+    let sigs (ms: MethodInfo[]) = String.Join("; ", ms |> Array.map (memberSignature name))
+    if not t.IsVisible then sprintf "the call did not compile: %s is not public" type0
+    elif all.Length = 0 && not (isNull (t.GetProperty(name, flags))) then sprintf "the call did not compile: %s.%s is a value, not a function" type0 name
+    elif all.Length = 0 then sprintf "the call did not compile: %s has no static member %s" type0 name
+    elif publics.Length = 0 then sprintf "the call did not compile: %s.%s is private or internal" type0 name
+    elif publics |> Array.exists (fun m -> m.GetParameters().Length = argc) then
+        sprintf "the call did not compile: the arguments do not fit %s (fsi's message is in the REPL output)" (sigs publics)
+    else
+        let counts = publics |> Array.map (fun m -> string (m.GetParameters().Length)) |> Array.distinct
+        sprintf "the call did not compile: %s.%s takes %s argument(s), got %d: %s" type0 name (String.Join(" or ", counts)) argc (sigs publics)
+
+// a type's name as F# writes it in a call: fsi's prefix gone, `+` a dot, a generic's `` `1 `` gone
+let private typeFullName (t: Type) =
+    Text.RegularExpressions.Regex.Replace(sourceName t.FullName, @"`[0-9]+", "")
+
+// why `Ns.Module.f (a) (b)` (or a type's static member) with `argc` arguments did not compile, as far as
+// reflection can tell
 let private diagnose (module0: string) (name: string) (argc: int) =
     let types =
         AppDomain.CurrentDomain.GetAssemblies()
         |> Seq.collect (fun a -> try a.GetTypes() with :? ReflectionTypeLoadException as e -> e.Types |> Array.filter (isNull >> not))
+        |> Seq.filter (fun t -> not (isNull t.FullName))
+        |> Array.ofSeq
     // the last one loaded wins, as fsi's own name resolution does
     let t = types |> Seq.filter (fun t -> isModule t && moduleName t = module0) |> Seq.tryLast
+    let owner = types |> Seq.filter (fun t -> not (isModule t) && typeFullName t = module0) |> Seq.tryLast
     let logHint () =
         let build =
             try
@@ -676,10 +714,11 @@ let private diagnose (module0: string) (name: string) (argc: int) =
             | [] -> ""
             | xs -> " (did not load: " + String.Join(", ", xs) + "; fsi's message is in the REPL output)"
         build + scripts
-    match t with
-    | None -> sprintf "the call did not compile: no module %s in what was loaded%s" module0 (logHint ())
-    | Some t when not t.IsVisible -> sprintf "the call did not compile: %s is not public" module0
-    | Some t ->
+    match t, owner with
+    | None, Some o -> diagnoseMember o module0 name argc
+    | None, None -> sprintf "the call did not compile: no module %s in what was loaded%s" module0 (logHint ())
+    | Some t, _ when not t.IsVisible -> sprintf "the call did not compile: %s is not public" module0
+    | Some t, _ ->
         let all = t.GetMethods(BindingFlags.Public ||| BindingFlags.NonPublic ||| BindingFlags.Static) |> Array.filter (fun m -> m.Name = name)
         let value = t.GetProperty(name, BindingFlags.Public ||| BindingFlags.NonPublic ||| BindingFlags.Static)
         if all.Length = 0 && not (isNull value) then sprintf "the call did not compile: %s.%s is a value, not a function" module0 name
