@@ -19,7 +19,7 @@
 //     :load <path-to-embody>/embody.scala
 //     Embody.registerType(classOf[embodyjava.embody])
 //
-// The class is named as its file (`embody`), so `javac embody.java` compiles it as it is. See ReadMe.md,
+// The class is named as its file (`embody`), so `javac embody.java` compiles it as it is. See ReadMe.full.md,
 // "Java through Scala's REPL (`embody.java`)".
 
 package embodyjava;

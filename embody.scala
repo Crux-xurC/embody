@@ -2,7 +2,7 @@
 //
 // Loaded with `:load <path>/embody.scala`. It uses only what the REPL itself carries: the Scala 3
 // standard library, the JDK, and the compiler (its parser for `Embody.Load`, its ScriptEngine for
-// reading a literal back). See ReadMe.md, "Scala".
+// reading a literal back). See ReadMe.full.md, "Scala".
 //
 // One entry is three REPL inputs, each a complete line:
 //

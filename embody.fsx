@@ -20,7 +20,7 @@
 // The call is compiled by fsi itself; when it does not compile, `xt_<id>` stays unbound and `finish`
 // reports a crash (fsi's own diagnostic goes to the REPL's output, outside the markers). Only what comes
 // with the .NET SDK is used (FSharp.Core, System.Text.Json, FSharp.Compiler.Service for `Load`). See
-// ReadMe.md, "F# through F# Interactive (`embody.fsx`)".
+// ReadMe.full.md, "F# through F# Interactive (`embody.fsx`)".
 
 module Embody
 

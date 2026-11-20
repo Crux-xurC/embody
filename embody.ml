@@ -1,7 +1,7 @@
 (* SPDX-License-Identifier: MIT
 
    embody.ml -- the OCaml embody: a fixed module loaded into the target
-   project's plain `ocaml` toplevel. See ReadMe.md (this directory) for what
+   project's plain `ocaml` toplevel. See ReadMe.full.md (this directory) for what
    embody is and the output protocol every language's embody shares.
 
    It knows nothing of the target: what to evaluate arrives as text, and the
@@ -17,7 +17,7 @@
      Embody.dune_deps "<project root>";;          (a dune project only)
      Embody.load_all ~aliases:[...] "<scratch dir>" [ "<file.ml>"; ... ];;
 
-   Output (ReadMe.md, "出力の約束"):
+   Output (ReadMe.full.md, "Shared output contract"):
      XT_BEGIN_<id> / repr= / type= / compare= / display= / XT_END_<id>
      XT_ERROR_<id> timeout | XT_ERROR_<id> crash <one line> *)
 

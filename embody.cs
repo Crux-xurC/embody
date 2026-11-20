@@ -16,7 +16,7 @@
 //     #r "<dir>/EmbodyCs.dll"
 //     Embody.registerType typeof<EmbodyCs.Seam>;;
 //
-// It works by reflection over what is loaded, so it does not reference the target. See ReadMe.md, "C#
+// It works by reflection over what is loaded, so it does not reference the target. See ReadMe.full.md, "C#
 // through F# Interactive (`embody.cs`)".
 
 #nullable enable

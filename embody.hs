@@ -2,7 +2,7 @@
 -- SPDX-License-Identifier: MIT
 --
 -- embody.hs -- the Haskell embody: a fixed module loaded into GHCi next to the
--- target project's modules. See ReadMe.md (this directory) for what embody
+-- target project's modules. See ReadMe.full.md (this directory) for what embody
 -- is and the output protocol every language's embody shares.
 --
 -- It depends on `base` only and knows nothing of the target: what to

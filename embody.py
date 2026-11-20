@@ -10,7 +10,7 @@ and then, one line per evaluation:
 
     _xt_embody.run("<id>", "xt_<id>", <timeout ms>, "<module>", "<call>", <basis>)
 
-Only the standard library is used. See ReadMe.md, "Python (`embody.py`)".
+Only the standard library is used. See ReadMe.full.md, "Python (`embody.py`)".
 """
 
 import ast
