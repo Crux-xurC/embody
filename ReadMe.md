@@ -19,7 +19,7 @@ embody was created as a component used by Xipe Totec, a tool that evaluates and 
 | `embody.py` | Python (`python -i`) | Implemented; checked with Python 3.13.12 |
 | `embody.fsx` | F# (F# Interactive, `dotnet fsi`) | Implemented; checked with the .NET 8 SDK 8.0.419 |
 | `embody.scala` | Scala 3 (Scala's REPL, `dotty.tools.repl.Main`) | Implemented; checked with Scala 3.3.6 on JDK 21 and 27 |
-| `embody.cs` | C#, through F# Interactive: a seam for `embody.fsx` | Implemented (the seam alone; Xipe Totec's C# adapter to come); checked with the .NET 8 SDK 8.0.419 |
+| `embody.cs` | C#, through F# Interactive: a seam for `embody.fsx` | Implemented; used by Xipe Totec's C# adapter; checked with the .NET 8 SDK 8.0.419 |
 
 Each file can be loaded on its own. This repository does not provide build configuration (flake, dune, cabal, and so on); the caller decides how to load the module.
 
