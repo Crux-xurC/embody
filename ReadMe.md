@@ -40,8 +40,8 @@ XT_END_<id>
 ```
 
 or `XT_ERROR_<id> timeout`, `XT_ERROR_<id> crash <one-line reason>`. Each record is one write. The markers, the field names and the
-`key=value` lines are the protocol; everything else the REPL prints can be ignored. The fields in detail:
-[ReadMe.full.md](ReadMe.full.md#shared-output-contract).
+`key=value` lines are the protocol; everything else the REPL prints can be ignored. The fields in detail, when `compare` is
+`skipped` in each language, and the auxiliary markers (`XT_CALLED_<id>`, `XT_READY` …): [ReadMe.full.md](ReadMe.full.md#shared-output-contract).
 
 ## License
 

@@ -50,7 +50,7 @@ XT_END_<id>
 |---|---|
 | `repr` | `exact`: evaluating `display` as source in the same language reconstructs the value, so it can be embedded in another expression and compared. `binary`: the value cannot be reconstructed from source text but can be stored as bytes; a `bin_base64=` field is included. `unsupported`: it cannot be reconstructed (for example, a function, cycle, or abstract value); only its display is recorded. |
 | `type` | The type at the language's own level of detail (for example, OCaml's `Geometry.shape list`). |
-| `compare` | Comparison with a previous value, when supplied. It is `none` when no previous value was supplied and `skipped` when either value is not `exact`. |
+| `compare` | Comparison with a previous value, when supplied: `none` when none was supplied, else `same` / `changed`, or `skipped` when the two cannot be compared. What can be compared differs by language (below). |
 | `display` | A one-line display of the value. Newlines are represented by the two characters `\n`. |
 
 **Failure**
@@ -62,7 +62,25 @@ XT_ERROR_<id> crash <one-line reason>
 
 A `crash` reason is the language's own text, such as an exception, type error, or syntax error.
 
-The marker prefixes (`XT_BEGIN_`, `XT_END_`, `XT_ERROR_`), field names, and one-line `key=value` format are protocol and must not change. A caller can ignore other REPL output, such as prompts, and parse only the markers for its own `<id>`.
+**When `compare` is `skipped`**, by language (each language's section says how it compares):
+
+| Language | `skipped` when | A previous value that cannot be read back |
+|---|---|---|
+| Python, F# (and C#), Scala (and Java) | the new value is `unsupported`. `exact` and `binary` values are both compared (a `binary` previous value is loaded back from its bytes) | `changed` |
+| OCaml | the new value is not `exact` | `changed` (it is not equal) |
+| Haskell | the previous value's text does not read back as the new value's type | — (that is `skipped`) |
+
+**Auxiliary markers.** Besides the records, some files print, or read, lines of their own. A caller may ignore them; those it uses:
+
+| Marker | Printed by | Meaning |
+|---|---|---|
+| `XT_CALLED_<id>` | `embody.py`, `embody.fsx`, `embody.scala` | the call returned, before the value is judged (`repr`, `compare`): a timeout after it was spent judging the value, not in the call |
+| `XT_READY` | `embody.scala` (`Embody.ready()`) | embody is loaded and the REPL is ready: a REPL without embody never prints it |
+| `XT_LOAD_FAILED <path or step>` | `embody.ml` | a target file (or `dune ocaml top`) did not load; the toplevel's output follows |
+| `XT_LOAD_ERROR <path> <reason>` | `embody.fsx`, `embody.scala` (`Load.write`) | a script could not be read for its definitions; the others were written |
+| `XT_BUILD_ERROR <reason>` | not embody: a caller's build step (Xipe Totec's Java adapter) | read by `embody.scala` when a call does not compile, to name why in its `crash` |
+
+The marker prefixes (`XT_BEGIN_`, `XT_END_`, `XT_ERROR_`, and the auxiliary ones above), field names, and one-line `key=value` format are protocol and must not change. A caller can ignore other REPL output, such as prompts, and parse only the markers for its own `<id>`.
 
 ---
 
@@ -181,6 +199,12 @@ _xt_embody.run("<id>", "xt_<id>", <timeout-in-milliseconds>, "<module>", "<call>
 - Exceptions become `crash` with the exception's type and message. Timeouts use SIGALRM (`signal.setitimer`), which stops loops running Python bytecode.
 - SIGINT raises `KeyboardInterrupt` in the current evaluation and the REPL continues reading.
 - There is no memory limit (Python can only limit the whole process).
+- `float('nan')` (and a container holding it) is `unsupported`: NaN is not equal to itself, so neither its text nor its pickle reads
+  back equal.
+- A `binary` value's `display` is its `repr()`; a class without its own `__repr__` shows its address (`<calc.P object at 0x…>`), which
+  changes on every run. Compare by `compare`, not by `display`.
+- A `binary` previous value is loaded with `pickle.loads` to compare it: loading a pickle can run any code. Supply previous values only
+  from your own records (Xipe Totec's Book on your machine), never from someone else's.
 
 **Out of scope:** A loop inside C code (for example, `sum(itertools.count())`) is stopped neither by SIGALRM nor by SIGINT; the caller must end the process. The value is judged (`repr`, `pickle`) outside the time limit. An `async def` function returns its coroutine, which is not awaited (`unsupported`).
 
