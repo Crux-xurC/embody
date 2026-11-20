@@ -218,6 +218,12 @@ A type's static member is called the same way, as a method: `let xt_<id> = Embod
 - `type=` is F#'s name: `int`, `int[]`, `int list`, `string option`, `struct (int * string)`, `int -> int` for a function, a union's own type (not its case's class), else the .NET name with its namespace (`Sample.Point`, `System.Collections.Generic.List<int>`); a type F# Interactive compiled loses its `FSI_0002.` prefix.
 - SIGINT makes F# Interactive print `- Interrupt` and read on with its bindings. There is no memory limit.
 
+**Helpers: another .NET language's values, through a seam.** `embody.fsx` stays F#'s alone; a small helper written for another language (for C#, `embody.cs`, to come) registers itself after embody is loaded, with `Embody.register { Embody.Helper.Covers = …; Head = …; Parts = …; Split = …; Make = …; Diagnose = … }`, every field a `Func` over .NET's own types, so a helper in any .NET language can fill it. embody asks the helpers only where it has no answer of its own, the first registered first; a helper that throws gives no answer.
+
+- `Covers(type)`: whether values of that type are the helper's
+- `Head(type)`, `Parts(type)`, `Split(value)`, `Make(type, args)`: such a value is written as a call of its constructor, `Head(arg, …)` (`Sample.Point(2.0, 3.0)`), the arguments in the order of `Parts`, each written by embody's own writer (a number, a string, a `List` inside is the literal it always is; a covered value inside is written the same way), so the text is F# a later row takes as it is. It is read back by embody's reader (the head, then each argument as its type) and made with `Make`; `exact` and `compare` follow, two such values being equal argument by argument (a `List` inside element by element). A value `Split` gives `null` for is not written: `binary` or `unsupported` as before. A head must be a dotted name (no type arguments)
+- `Diagnose(module, name, count)`: why a call that did not compile failed, in the helper's language's terms; `null` when the module is not its own (embody's F# diagnosis follows)
+
 **Out of scope:** a native wait longer than the time limit keeps its thread running after `timeout`; the value is judged (`display`, JSON) outside the time limit; private state reached only through a nested object is not seen by the `binary` check; a script whose definitions use a value its top level computes does not load from its copy.
 
 ---

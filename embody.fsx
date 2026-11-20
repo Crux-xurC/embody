@@ -13,6 +13,9 @@
 //     let xt_<id> = Embody.call (fun () -> Ns.Module.f (a) (b));;
 //     Embody.finish "<id>" "Ns.Module" "f" <number of arguments>;;
 //
+// A seam for another .NET language (`embody.cs` for C#) registers a `Helper` after this file is loaded
+// (`Embody.register`): its values are written as constructor calls and its failures told in its terms.
+//
 // The call is compiled by fsi itself; when it does not compile, `xt_<id>` stays unbound and `finish`
 // reports a crash (fsi's own diagnostic goes to the REPL's output, outside the markers). Only what comes
 // with the .NET SDK is used (FSharp.Core, System.Text.Json, FSharp.Compiler.Service for `Load`). See
@@ -136,6 +139,40 @@ let private isRecord (t: Type) = FSharpType.IsRecord(t)
 // lists and options are unions too, written their own way above them
 let private isUnion (t: Type) =
     FSharpType.IsUnion(t) && not (t.IsGenericType && (t.GetGenericTypeDefinition() = typedefof<list<_>> || t.GetGenericTypeDefinition() = typedefof<option<_>>))
+
+// --- helpers: another language's values, through a seam --------------------------------------------
+//
+// A seam (another .NET language's own helper, such as `embody.cs` for C#) registers itself at the start
+// with `register`. embody.fsx knows nothing of that language: it asks the helpers only where its own
+// writer, reader, equality and diagnosis have no answer. A helper describes a value it covers as a call
+// of a constructor, `Head(arg, …)`: embody.fsx writes the arguments with its own writer (so a number, a
+// string or a list inside is the F# literal it always is, and a covered value inside another one is
+// written the same way), reads them back with its own reader, and compares two such values argument by
+// argument. Only .NET's own types cross, so a helper written in any .NET language can fill it.
+
+/// What a seam gives embody.fsx. Every function may throw; a throw is taken as "no answer".
+type Helper =
+    { /// Whether values of this type are the helper's
+      Covers: Func<Type, bool>
+      /// The constructor as written in a call: `Sample.Point`
+      Head: Func<Type, string>
+      /// The constructor's parameter types, in order
+      Parts: Func<Type, Type[]>
+      /// A value's constructor arguments, in order; null when it cannot be written as a call
+      Split: Func<obj, obj[]>
+      /// The value the constructor makes from these arguments
+      Make: Func<Type, obj[], obj>
+      /// Why `module.name` with this many arguments did not compile, in the helper's language's terms;
+      /// null when the module is not the helper's
+      Diagnose: Func<string, string, int, string> }
+
+let private helpers = Generic.List<Helper>()
+
+/// Register a helper; the ones registered first are asked first.
+let register (h: Helper) = helpers.Add h
+
+let private covering (t: Type) =
+    helpers |> Seq.tryFind (fun h -> try h.Covers.Invoke t with _ -> false)
 
 // --- F# literals: the values `exact` covers ----------------------------------------------------------
 //
@@ -263,7 +300,21 @@ let rec private literal (t: Type) (v: obj) : string option =
             if parts.IsEmpty then Some name
             elif parts |> List.forall Option.isSome then Some(name + " (" + String.Join(", ", parts |> List.map Option.get) + ")")
             else None
-        | _ -> None
+        | _ ->
+            // not F#'s own: a helper's value, written as its constructor's call
+            match covering rt with
+            | None -> None
+            | Some h ->
+                try
+                    let args = h.Split.Invoke v
+                    let types = h.Parts.Invoke rt
+                    if isNull args || args.Length <> types.Length then None
+                    else
+                        let parts = Array.map2 literal types args |> Array.toList
+                        if parts |> List.forall Option.isSome then
+                            Some(h.Head.Invoke rt + "(" + String.Join(", ", parts |> List.map Option.get) + ")")
+                        else None
+                with _ -> None
 
 // --- reading a literal back (for the exact check and for compare) -----------------------------------
 
@@ -441,7 +492,18 @@ let rec private read (r: Reader) (t: Type) : obj =
                     r.Eat ")"
                     xs
             FSharpValue.MakeUnion(case, xs)
-    else raise (Unreadable("no literal for " + typeName t))
+    else
+        match covering t with
+        | None -> raise (Unreadable("no literal for " + typeName t))
+        | Some h ->
+            let head = h.Head.Invoke t
+            let tok = r.Token()
+            if tok <> head then raise (Unreadable("expected " + head))
+            let types = h.Parts.Invoke t
+            r.Eat "("
+            let xs = types |> Array.mapi (fun k pt -> (if k > 0 then r.Eat ","); read r pt)
+            r.Eat ")"
+            h.Make.Invoke(t, xs)
 
 let private readAll (text: string) (t: Type) : obj =
     let r = Reader text
@@ -474,7 +536,15 @@ let rec private equal (a: obj) (b: obj) : bool =
         let ca, xa = FSharpValue.GetUnionFields(a, a.GetType())
         let cb, xb = FSharpValue.GetUnionFields(b, b.GetType())
         ca.Tag = cb.Tag && Array.forall2 equal xa xb
-    | _ -> a.Equals b
+    | _ ->
+        // a helper's value: argument by argument (a list inside element by element), else its own Equals
+        let parts =
+            match covering (declared (a.GetType())) with
+            | Some h -> (try Some(h.Split.Invoke a, h.Split.Invoke b) with _ -> None)
+            | None -> None
+        match parts with
+        | Some(xa, xb) when not (isNull xa) && not (isNull xb) -> xa.Length = xb.Length && Array.forall2 equal xa xb
+        | _ -> a.Equals b
 
 // --- binary: System.Text.Json, only when the round trip is the same ---------------------------------
 
@@ -736,7 +806,13 @@ let finish (id: string) (module0: string) (name: string) (argc: int) =
         | Some entry when entry.Id = id ->
             current <- None
             match entry.Outcome with
-            | NotRun -> sprintf "XT_ERROR_%s crash %s\n" id (oneLine (diagnose module0 name argc))
+            | NotRun ->
+                // a helper's own terms first (a C# type's methods), else F#'s
+                let why =
+                    helpers
+                    |> Seq.tryPick (fun h -> try Option.ofObj (h.Diagnose.Invoke(module0, name, argc)) with _ -> None)
+                    |> Option.defaultWith (fun () -> diagnose module0 name argc)
+                sprintf "XT_ERROR_%s crash %s\n" id (oneLine why)
             | Crash r -> sprintf "XT_ERROR_%s crash %s\n" id (oneLine r)
             | TimedOut -> sprintf "XT_ERROR_%s timeout\n" id
             | Value(v, t) ->
