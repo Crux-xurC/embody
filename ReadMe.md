@@ -12,6 +12,8 @@ It is a component of [Xipe Totec](https://github.com/Crux-xurC/xipe_totec), whic
 tools can use it by the output contract. The whole ReadMe — loading each language, its protocol, the versions checked, the limits — is
 [ReadMe.full.md](ReadMe.full.md).
 
+What it looks like: [Xipe Totec's README](https://github.com/Crux-xurC/xipe_totec#readme) has a screenshot and a 3.5-minute video of an AI agent trying a library's functions over MCP, with tezcatl as the window.
+
 ## Files
 
 | File | Language / REPL |
